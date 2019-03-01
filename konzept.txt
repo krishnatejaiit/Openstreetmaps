@@ -1,0 +1,707 @@
+nodes: Index = LL_upper, Object = Id LL_lower
+node_tags_global: Index = (Key Value), Object = LL_upper Id
+node_tags_local: Index = (LL_upper_24 Key Value), Object = Id
+ways: Index = LL_upper, Object = Id Count (Node-Id)*
+way_tags_global: Index = (Key Value), Object = LL_upper Id
+way_tags_local: Index = (LL_upper_24 Key Value), Object = Id
+relations: Index = LL_upper, Object = Id Count (Type Id Role-Id)*
+relation_tags_global: Index = (Key Value), Object = LL_upper Id
+relation_tags_local: Index = (LL_upper_24 Key Value), Object = Id
+
+area-query
+bbox-query
+filter
+query
+recurse
+print
+
+import
+update
+
+---
+
+Update-Abhängigkeiten:
+node_tags_global: Um alte Tags finden zu können, müssen wir diese zunächst auslesen. Passiert über node_tags_local
+node_tags_local: Um alte Tags finden zu können, müssen wir diese zunächst auslesen. Dies erfordert den alten LL_index der Node, also Lesen von nodes
+nodes: Für alten LL_index muss diese Datei sowieso zunächst gelesen werden. Alternativ: LL_index-Verzeichnis
+
+*_tags_global/_local: analog
+ways/relations: werden auch aus ihrem LL_index-Verzeichnis ausgerüstet
+Für die neuen LL-Indizes müssen allerdings die LL-Indizes der betroffenen Nodes bzw. Ways bekannt sein. (können aus dem aktualisierten LL_index gelesen werden)
+
+Update-Strategie:
+a) Nodes
+aa) Lese die Löschindizes der alten Nodes aus
+ab) Lösche und Aktualisiere die Nodes
+ac) Lese die Tags der alten Nodes ein
+ad) Lösche und Aktualisiere nodes_local
+ae) Lösche und Aktualisiere nodes_global
+b) Ways
+ba) Lese die Positionen der benutzten Nodes aus LL_index aus
+bb) Lese die Löschindizes der alten Ways aus
+bc) Lösche und Aktualisiere die Ways
+bd) Lese die Tags der alten Ways ein
+be) Lösche und Aktualisiere ways_local
+bf) Lösche und Aktualisiere ways_global
+c) Relations
+ca) Lese die Positionen der benutzten Nodes und Ways aus LL_index aus
+cb) Lese die Löschindizes der alten Relations aus
+cc) Lösche und Aktualisiere die Relations
+cd) Lese die Tags der alten Relations ein
+ce) Lösche und Aktualisiere relations_local
+cf) Lösche und Aktualisiere relations_global
+
+Node_Updater:
+to_delete_ids
+to_delete_idxs
+
+---
+
+Welcher Index gehört wo hin?
+Sei ein Index q gegeben.
+a) Gibt es einen Blockindex b mit Index b' des Folgeblocks, so dass b\leq q < b' gilt, so gehört q in diesen Block.
+b) q gehört genau dann in einen Mehrfachblock, wenn q gleich dem Blockindex ist.
+c) Gehört der größte Blockindex a, der kleiner als q ist, zu einem Mehrfachblock, so gehört q in den Nachfolgeblock.
+d) Ist q größer als der größte Blockindex a und dieser ein Mehrfachblock, so gehört q in einen eigenen Block hinterher.
+e) Ist q kleiner als jeder Blockindex und der erste Block ist kein Mehrfachblock, so gehört q in den ersten Block.
+f) Ist q kleiner als jeder Blockindex und der erste Block ist ein Mehrfachblock, so gehört q in einen eigenen Block voraus.
+
+Anders formuliert:
+a) Es gibt "Segmentblöcke" (= mehrere Blöcke enthalten Daten zu nur einem Index) und "Gruppenblöcke" (= Nachfolge- und Vorgängerblock haben beide verschiedene Indizes).
+b) Suchen nach Blöcken (zum Lesen wie zum Einfügen) können daher leere Ergebnisse haben, einen oder mehrere Blöcke zurückliefern.
+c) Die Blockstruktur der Datenbank definiert eine Zerlegung des Indexraum wie folgt:
+- eine Familie von Segmentblöcken ist genau ihr Blockindex zugeordnet
+- hat ein Gruppenblock einen Gruppenblock als Vorgänger, so hat er als Untergrenze der Blockindizes seinen eigenen Startwert, sonst der minimale Index oder der Index, der infitesimal größer als der vorhergehende Blockindex ist
+- hat ein Gruppenblock einen Gruppenblock oder Segmentblock als Nachfolger, so hat er die Obergrenze infinitesimal kleiner als sein Nachfolgeblock, sonst das Supremum des Indexraums
+
+Pragmatisch:
+- wir wollen flach suchen (alles finden), mit einer diskreten Menge von Indizes suchen oder mit der Vereinigung diverser Intervalle suchen können.
+- Lesen wollen wir mit allen drei Methoden, schreiben nur mit diskreten Indizes (denn die zu schreibenden und zu löschenden Objekte haben ja Indizes).
+- der letzte Block eines Segmentblock-Familie muss beim Schreiben anders behandelt werden.
+- wir können keine infinitesimal größeren oder kleineren sowie keine Infima und Suprema sinnvoll generisch darstellen. Für das Lesen reicht es aber, sich auf tatsächlich in der Datenbank vorkommende Indizes zu beschränken, für das Schreiben reicht es, sich auf in der Schreibanfrage vorkommende Indizes zu beschränken.
+
+Flacher Iterator:
+  block_type()
+  ++, ==, =, (self), ~
+  flat_begin(), flat_end()
+  read_block(..)
+
+Diskreter Iterator:
+  block_type()
+  lower_bound(), upper_bound()
+  ++, ==, =, (self), ~
+discrete_begin(..), discrete_end()
+  read_block(..)
+insert_block(..)
+replace_block(..)
+
+Intervall-Iterator:
+block_type()
+lower_bound(), upper_bound()
+++, ==, =, (self), ~
+range_begin(..), range_end()
+read_block(..)
+
+Die Semantik von ++, ==, =, (self), ~, *_end() und flat_begin() ist die übliche.
+discrete_begin(..) nimmt ein Paar von Iteratoren über einen Container mit Indizes entgegen und iteriert über genau die Blöcke, die für diese Menge von Iteratoren relevant sein können.
+range_begin(..) tut das analoge für ein Paar von Iteratoren über einen Container von Intervallen.
+block_type() liefert einen der Werte \{ EMPTY, BLOCK, PARTIAL, LAST_PART \}
+read_block(..) ist eine Methode von File_Blocks, erhält als Argument einen Iterator und liefert den zugehörigen Datenblock aus.
+insert_block(..) ist eine Methode von File_Blocks, erhält als Argument einen diskreten Iterator und fügt den Block unmittelbar vor dem Block ein.
+replace_block(..) ist eine Methode von File_Blocks, erhält als Argument einen diskreten Iterator und ersetzt den vom Iterator bezeichneten Block.
+lower_bound() liefert die jeweils sinnvolle Untergrenze: für einen diskreten Iterator ist das der kleinste Index aus der Anfragemenge, der zum aktuellen Block des Iterators gehört. Für einen Intervall-Iterator ist dies der kleinste Index, der zum Block gehört und tatsächlich in der Datenbank existiert.
+upper_bound() liefert den kleinsten Index, der schon außerhalb des Blocks liegt. Für einen diskreten Iterator ist dies der kleinste Index aus der Anfragemenge, für den dies zutrifft und ggf. ==end(). Bei Intervallen ist es der erste Index des nächsten Blocks oder ==end() im Falle des letzten Blocks in der Datenbank.
+
+0, f96, 260a, 3276, 348c, 34ce
+
+void update(const map< TIndex, map< TObject > >& to_delete,
+  const map< TIndex, map< TObject > >& to_insert);
+
+update: 3 Fälle
+a) leerer Bestand
+b) 1 Block Bestand, ggf. mehrere Blöcke neu
+c) mehrere Blöcke Bestand
+
+a)+b) erfordern Algorithmus zur Blockteilung:
+- Verwende stets höchstens so viele Blöcke wie nötig, verteile so gleichmäßig wie möglich.
+- Wenn zwei aufeinanderfolgende Indizes nicht zusammen in einen Block passen, muss dazwischen geteilt werden.
+- Minimal mögliche Anzahl an Blöcken kann per Greedy ermittelt werden.
+- Heuristik: fülle von hinten nach vorne jeweils bis zum Durchschnitt auf
+
+calc_split_idxs(vector< TIndex >& split, const map< TIndex, int32 >& sizes);
+
+benötigt: TObject.sizeof()
+Größenberechnung: Tindex.sizeof() + sizeof(uint32) + \sum TObject.sizeof()
+
+bei a)
+- berechne die Indexgrößen allein aus den Neuzugängen
+- schreibe alle Blöcke mittels insert_block(end)
+
+bei b)
+- berücksichtigte Bestandsdaten, Löschungen und Neuzugänge für Indexgrößen
+- achte auf Indizes, die nicht mehr existieren
+- schreibe alle bis auf den letzten Block mittels insert_block(it), dann replace_block(it)
+
+bei c)
+- fülle Blöcke mit Löschungen mit Neudaten auf, sofern möglich
+- fülle den letzten Block auf, also replace_block bzw. insert_block
+- wenn etwas übrig bleibt, hänge einen Block an, also replace_block und insert_block davor
+
+---
+zum Thema Discrete_Iterator, hier: Verifikation von operator++ und Konstruktor
+
+Konstruktor:
+
+Wenn Indizes leer, dann Ende
+Wenn leer, dann leer zurück [ index_upper = (end) ]
+Wenn Block Segment ist und Index < Block.Index
+  is_empty = true [ index_upper der erste Index, der >= Block.Index ist ]
+Wenn (Nachfolger != (end) && Nachfolger.Index <= erster Index)
+{
+  Wenn (Index == erster Index)
+    Segment (einzige Möglichkeit für Segment): liefere dieses zurück [ index_upper = index + 1 ]
+  ++Block, ++Nachfolger
+}
+(*)
+Wenn (Nachfolger == (end))
+{
+  (relevantes Segment kann nicht passieren, da Segmente mehrteilig sind)
+  wenn Last_Segment, dann liefere dahinter (leer) zurück [ index_upper = (end) ]
+  ansonsten liefere diesen Block zurück [ index_upper = (end) ]
+}
+Wenn (Block ein Last_Segment ist)
+  is_empty = true [ index_upper der erste Index, der >= Block.Index ist ]
+liefere Block zurück [ index_upper der erste Index, der >= Nachfolger.Index ist ]
+
+Wohldef: ok
+Terminierung: ok, da endlich viele Blöcke
+Korrektheit:
+- richtiger Block: nur erster Index relevant. Korrekt, falls er auf ein Segment passt. An (*) gilt, dass (Nachfolger == (end) || (Nachfolger.Index > erster Index)), also wird auf keinen Fall ein zur kleiner Block zurückgeliefert. Außerdem gilt für keinen Block vor Nachfolger, dass (Index > erster Index). Also richtiger Block.
+- index_upper: für Segments korrekt per Definition, für Groups per Konstruktion
+
+---
+
+operator++:
+
+mögliche Zustände:
+- group
+- segment
+- last_segment
+- is_inserted
+- is_empty (bezieht sich auf den Folgeblock wenn is_inserted gesetzt ist)
+
+Wenn (is_inserted)
+  liefere ++Block zurück [ index, is_empty unverändert ]
+Wenn (is_empty)
+  setze (is_empty) zurück
+  setze index_lower = index_upper und index_upper:
+    falls Block == (end) auf (end)
+    ansonsten [ index_upper der erste Index, der >= Block.Index ist ]
+  fertig
+Wenn Segment
+  liefere ++Block zurück, Indices unverändert
+(*)
+index_lower = index_upper
+++Block
+Wenn (Block == (end))
+  fertig
+Wenn Block Segment ist und Index < Block.Index
+  is_empty = true [ index_upper der erste Index, der >= Block.Index ist ]
+Wenn (Nachfolger != (end) && Nachfolger.Index <= erster Index)
+{
+  Wenn (Index == erster Index)
+    Segment (einzige Möglichkeit für Segment): liefere dieses zurück [ index_upper = index + 1 ]
+  ++Block, ++Nachfolger
+}
+Wenn (Nachfolger == (end))
+{
+  (relevantes Segment kann nicht passieren, da Segmente mehrteilig sind)
+  wenn Last_Segment, dann liefere dahinter (leer) zurück [ index_upper = (end) ]
+  ansonsten liefere diesen Block zurück [ index_upper = (end) ]
+}
+Wenn (Block ein Last_Segment ist)
+  is_empty = true [ index_upper der erste Index, der >= Block.Index ist ]
+liefere Block zurück [ index_upper der erste Index, der >= Nachfolger.Index ist ]
+
+Ab (*) gilt, dass mit dem Ende von Block alle Indices mit < index_upper abgearbeitet sind.
+Wohldef: ok
+Terminierung: ok, da endlich viele Blöcke
+Korrektheit:
+- richtiger Block: Im Normalfall wird (*) erreicht, dann siehe oben. Für Segments wird korrekt der Folgeblock zurückgeliefert. is_empty und is_inserted werden ebenso explizit behandelt
+- index_lower: s. index_upper
+- index_upper: Im Normalfall wird (*) erreicht, dann siehe oben. Segments, is_empty und is_inserted werden explizit behandelt.
+
+---
+
+insert
+
+Zusicherung:
+- es gilt is_writeable (Ausnahme!)
+- es ist nicht is_inserted gesetzt (Ausnahme!)
+- es werden nur Indices eingetragen, die >= index_lower und < index_upper sind
+- für jeden Index in diesem Block gilt, dass er kleiner als Block.Index (des Blocks unter dem Iterator) wird, nachdem der Block bearbeitet ist.
+
+Block wird auf den neuen Block gesetzt und dessen Index in die Blockliste aufgenommen; es wird is_inserted gesetzt. Achtung: is_empty bezieht sich (wie die Indexgrenzen) nun auf den Folgeblock.
+
+---
+
+replace
+
+Zusicherung:
+- es gilt is_writeable (Ausnahme!)
+- es gilt nicht is_empty (Ausnahme!)
+- es werden nur Indices und alle verbleibenden Indices eingetragen, die >= index_lower und < index_upper sind
+
+Durch die Zusicherung ist sichergestellt, dass sich dies so mit operator++ verträgt.
+
+---
+
+replace delete
+
+Zusicherung:
+- es gilt is_writeable (Ausnahme!)
+- es gilt nicht is_empty (Ausnahme!)
+
+Es wird zum nächsten Block gewechselt. Durch die Zusicherung ist sichergestellt, dass sich dies so mit operator++ verträgt.
+
+---
+
+The concept and why it is safe: In general, there may be at most one write process, but an arbitrary number of read processes.
+
+The assertion for writing is that at any time, the disk is in a well defined state. The allowed to states are:
+(1) No file named "dirty" exists. Then the idx files for all files are consistent with the data files. If an idl file exists, it marks the unused blocks. Otherwise every not referenced block is defined to be unused.
+(2) A file named "dirty" exists. Then the idy files for all files are consistent with the data files and every not referenced block is defined to be unused.
+The system now writes new content into unused or extra blocks and the updates index into an idy file instead of the idx file. It will succeed in a state where idx and idx files both point consistently into (possible different blocks of) the files. Thus, a switch from (1) to (2) is immediately possible. In state (2), the dispatcher copies from the idy files to the idx files. Once it is finished, idx and idx files have equal content, and the system can switch by removing "dirty" immediately back to (1).
+
+The assertion for the interplay of reading and writing are more complex: A reading process first has the oppurtunity to make its copy of the idx files. These remain unchanged while the reading process has a reading_idx lock. Then, the reading process has the assertion that all blocks referenced from this idx remain available and unchanged until it releases its read lock. For this purpose, these blocks must not appear in an idl file. Every block that is neither registered in such an index nor the curent index shall appear in the idl file.
+
+---
+
+Automated Testing Environment:
+
+This is realized with a bash script, located in osm-3s_testing.
+A test is a line $EXEC $I $ARGS where $ARGS collect all arguments, but the first is the number of the test within $EXEC, plus a directory osm-3s_testing/expected/$EXEC_$I which contains the expected output. osm-3s_testing/input/$EXEC_$I contains the input for the test. The test is then executed by wiping the directory osm-3s_testing/run/$EXEC_$I, then copying the input there. The test is run as test-bin/$EXEC $I $ARGS. Then, the output is diffed file by file to expected. If any differences exist, it returns FAILED, otherwise "passed" and deletes run/$EXEC_$I. The standard input is copied to stdout.log, standard error to stderr.log.
+
+Directory structure:
+
+bin
+build
+cgi-bin
+html
+src
++-bin
++-cgi-bin
++-expat
++-overpass_api
+| +-core
+| +-dispatch
+| +-frontend
+| +-osm-backend
+| +-statements
++-public_transport
++-template_db
++-test-bin
++-utils
+test_data
++-overpass_api
+| +-...
++-template_db
+  +-...
+test-bin
+
+---
+
+Transactions::Write
+
+/* Takes the write mutex of the database by writing its pid into the file
+   ".lock". It waits for a second whether its pid is still present to avoid
+   race conditions. */
+void write_lock(pid_t pid) throws File_Error;
+/* Tests:
+   Call with nonexisting file: should succeed.
+   Call with empty file: should succeed.
+   Call with filled file: should throw File_Error.
+   Call concurrent with writing process: should throw File_Error.
+*/
+
+/* Retrieves the current list of empty blocks. It triggers the generation of
+   an idl file by the dispatcher, then reads this file. */
+vector< vector< uint > > collect_empty_blocks
+  (pid_t pid, string dispatcher_share_name, string idl_filename)
+    throws Dispatcher_Error, File_Error;
+/* To dispatcher: sends Dispatcher::REQUEST_IDL and its pid to the dispatcher.
+   Waits 10x10ms for response, then resends Dispatcher::REQUEST_IDL if no answer is given.
+   The expected response is the pid. */
+/* Tests:
+   Fast responding vs. slow responding dispatcher: should wait for response.
+   No dispatcher: should throw message.
+   Check dispatcher communication.
+   Empty file, file covering one or several files and containing one or several
+   blocks for each file: should reproduce exactly this list.  */
+
+/* Testen, dass neu nach idy geschrieben wird. */
+
+/* Releases the mutex without moving any index file. */
+void write_rollback(pid_t pid) throws File_Error;
+/* Tests:
+   Call with nonexisting file: should throw File_Error.
+   Call with a file: should succeed and remove the file.
+ */
+
+/* Triggers the dispatcher to copy from idy to idx. Releases the write mutex
+   afterwards. */
+void write_commit(pid_t pid, string dispatcher_share_name) throws File_Error, Dispatcher_Error;
+/* To dispatcher: sends Dispatcher::WRITE_COMMIT and its pid to the dispatcher.
+   Waits 10x10ms for response, then resends Dispatcher::WRITE_COMMIT if no answer is given.
+   The expected response is the pid. */
+/* Tests:
+   Fast responding vs. slow responding dispatcher: should wait for response.
+   No dispatcher: should throw message.
+   Check dispatcher communication.
+   Call with nonexisting file: should throw File_Error.
+   Call with a file: should succeed and remove the file.
+ */
+
+Transactions::Read
+
+/* Retrieves all index files. Registers at the dispatcher and locks during the
+   file retrieval. */
+void read_subscribe(pid_t pid, string dispatcher_share_name, string idx_share_name) throws File_Error, Dispatcher_Error;
+/* To dispatcher: sends Dispatcher::REQUEST_READ_AND_IDX and its pid.
+   Waits 10x10ms for response, then resends Dispatcher::REQUEST_READ_AND_IDX if no
+   answer is given. The expected response is the pid.
+   Then it attemps to read the given share. If that fails, reads the given idx files.
+   Afterwards sends Dispatcher::IDX_READ_DONE to dispatcher.
+   Waits 10x10ms for response, then resends Dispatcher::IDX_READ_DONE if no
+   answer is given. The expected response is the pid. */
+/* Tests:
+   Fast responding vs. slow responding dispatcher: should wait for response both times.
+   No dispatcher: should throw message.
+   Check dispatcher communication.
+   Read from empty share.
+   Read from populated share.
+   Read from usual idx files, empty and populated.
+ */
+
+/* Releases the read lock. */
+void read_quit(pid_t pid, string dispatcher_share) throws Dispatcher_Error;
+/* To dispatcher: sends Dispatcher::READ_FINISHED and its pid.
+   Waits 10x10ms for response, then resends Dispatcher::READ_FINISHED if no
+   answer is given. The expected response is the pid. */
+/* Tests:
+   Fast responding vs. slow responding dispatcher: should wait for response.
+   No dispatcher: should throw message.
+   Check dispatcher communication.
+ */
+
+State of the file system:
+- *.map, *.bin files for the data
+- *.idx always
+- *.lock and possibly *.idl and *.idy during a write action
+- *.idy and dirty if the *.idx files are rewritten
+
+and
+- a bidirectional shared memory.
+- a shared memory managed by dispatcher to pass the idx files (postponed).
+
+/* Waits in its main loop for one of the following requests. Adtionally, it
+   checks from time to time if the registered readers still exist.*/
+Transactions::Dispatcher
+{
+  class Idx_Footprints
+  {
+    void set_current_footprint(vector< vector< bool > >);
+    void register(pid_t pid); 
+    void unregister(pid_t pid); 
+    vector< pid_t > registered_processes() const;
+    vector< vector< bool > > total_footprint() const;
+  };
+
+  /* Opens a shared memory for dispatcher communication. Furthermore,
+     detects whether idx or idy are valid, clears to idx if necessary,
+     and loads them into the shared memory idx_share_name. */
+  Dispatcher::Dispatcher(string dispatcher_name, string idx_share_name,
+    vector< File > managed_files) throws File_Error, Dispatcher_Error;
+  /* Tests:
+     Shall throw an error if one of the shares is not accessible.
+     Shall throw an error if a file in the db_dir is not accessible.
+     Shall read all idy if dirty is present, all idx files otherwise. For this
+     purpose, the content of the shared memory can be checked against the idx files.
+     Read a set of idy files when dirty is present.
+     Read a set of idx files when dirty is absent.
+  */
+
+  /* Changes the state of the process identified by its pid from reading_idx
+     to reading the files. */
+  void Dispatcher::idx_read_done(pid_t pid);
+  /* See tests below. */
+
+  /* Unregisters the process identified by its pid from reading the files. */
+  void Dispatcher::read_finished(pid_t pid);
+  /* See tests below. */
+
+  /* Writes the current total footprint into an idl file. It doesn't need
+     a mutex because it will include the current index anyway. The worst thing
+     possible, resulting from a race condition with an unregistering read
+     process would be some blocks that are kept unnecessarily reserved. */
+  void Dispatcher::request_idl(pid_t pid) const;
+  /* See tests below. */
+
+  /* Registers the process identified by its pid for reading the idx share. */
+  void request_read_and_idx(pid_t pid);
+  /* See tests below. */
+
+  /* Validates the idy files. Then it copies the idy files to the idx files
+     and to the idx share. Afterwards, it revalidates the idx files. */
+  void Dispatcher::write_commit(pid_t pid);
+  /* See tests below. */
+
+  /* Checks whether all read processes still exist and removes no longer
+     existing processes from reading_idx_pids and footprints. */
+  void Dispatcher::purge_zombies();
+  /* See tests below. */
+
+  /* If pending_commit is false, all commands will be processed. If pending
+     commit is true, request_read_and_idx is blocked. Write_commit is only
+     possible if reading_idx_pids is empty, otherwise only pending_commit will
+     be activated. */
+  void main_loop();
+  /* Tests for the mutexes:
+     write_commit with no running reading process: should return success.
+     Register a process for reading_idx; wait for response.
+     write_commit with a process in mode reading_idx: should not return.
+     Register the process for reading the files; wait for response.
+     write_commit with no running reading process: should return success.
+     Register a second and third process for reading_idx; wait for response.
+     write_commit with a process in mode reading_idx: should not return.
+     Register the third process for reading the files; wait for response.
+     Register a fourth and fifth process for reading_idx; wait for response.
+     Register the fourth then the second process for reading the files; wait for response.
+     write_commit with a process in mode reading_idx: should not return.
+     Register the fifth process for reading the files; wait for response.
+     write_commit with no running reading process: should return success.
+     Unregister all processes.
+
+     Test for the idl content:
+     Fill Dispatcher with a simple idx file, e.g. ((0 1)), ((0 1), (0 3)).
+     Request idl file.
+     Register a process for reading_idx; wait for response.
+     Request idl file.
+     Register a second process for reading_idx; wait for response.
+     Request idl file.
+     Register both processes for reading the files; wait for response.
+     Request idl file.
+     Fill Dispatcher with a simple idy file, e.g. ((0 2)), (); call write_commit.
+     Request idl file.
+     Fill Dispatcher with a simple idy file, e.g. ((0 3)), ((0 5)); call write_commit.
+     Request idl file.
+     Register a process for reading_idx; wait for response.
+     Request idl file.
+     Fill Dispatcher with a simple idy file, e.g. ((0 4)), ((0 2)); call write_commit.
+     Request idl file.
+     Unregister the third process.
+     Request idl file.
+     Unregister the first process.
+     Request idl file.
+     Unregister the second process.
+     Request idl file. Now, only the last idy file should remain.
+
+     Test for correct idl and idx generation:
+     Fill Dispatcher with idy file ((0 1), (0 2)) but 3 blocks.
+     Request idl file. Check idx files.
+     Fill Dispatcher again. Request idl file.
+     Fill Dispatcher with idy file ((0 2)) but 3 blocks.
+     Request idl file. Check idx files.
+     Fill Dispatcher with idy file ((0 1), (0 2), (0 3)) and 3 blocks.
+     Request idl file. Check idx files.
+  */
+
+  Idx_Footprints footprints;
+  vector< vector< bool > > current_footprint;
+  vector< int > reading_idx_pids;
+  bool pending_commit;
+};
+
+---
+
+Smart pointer:
+(..) : delegate to new Pimpl(..), set counter=1
+~(..) : decrement counter, call destructor if applicable
+(&) : copy pointer, increment counter
+= : if !=, increment new one, decrement old one, call destrcutor if applicable
+
+Read_Without: Index from idx + File_Ext for all on construction, Void_Index empty, no write back. Constructor: (vec< File_Prop* >, string file_ext, bool writeable, bool shadow)
+Write_Without: Index from idx + File_Ext for all on construction, Void_Index by calculation, write back.
+Read_Transact: Index from Share on construction, Void_Index empty, no write back.
+Write_Transact: Index from Shadow on construction, Void_Index empty, write back to shadow.
+
+get_file_name_extension()
+get_index()
+
+---
+
+query:
+- Read all elem-ids from one-block-clauses.
+- Intersect them if applicable.
+- If there are less than THRESHOLD, locate them. (cache?)
+- Could be faster if the index is stored along with the node_id. To reduce the data amount, we could attach a shortened index to the key. Does this pay off? We need at least 24 bit of index to make meaningful predictions. This will be 150000 to 750000 indices, thus useful only for tags with more than 1.2 mio. to 5 mio. occurences. If you query for such a tag alone, you will exceed the element limit anyway.
+- Small area/bbox works like a query with few results and known locations, but intersecting isn't possible.
+
+- if known, indices are provided. World assumed otherwise.
+
+- prelocated searches are performed via local_tags, one located clause suffices.
+
+area-query/bbox-query:
+- see above
+
+recurse:
+- Indices can be translated one by one. This isn't helpful if the initial index of a way or relation takes much space.
+- Element numbers could be calculated from the idx files, assuming an uniform distribution. Once again, this profits from more precise way indices.
+
+union/intersect:
+- Indices are unified/intersected.
+- Element numbers go to proportionals of the shared indices, based on the averages of all sets. The union has at most the sum of all counts, the intersection at most the minimum of all counts.
+
+print:
+- only output.
+
+All times need to be mesured with different samples.
+
+---
+
+Our current concept of Random_File is incompatible to transactionality, basically because there is only one valid position in the file for each entry.
+
+Possible redesigns of Random_File:
+Things to benchmark:
+a Number of necessary disk seeks.
+b Amount of initial data to load for an index up to 4GB. Can be cached in RAM later on if it isn't too much.
+c Disk overhead for no changes.
+d Disk overhead for sparse changes, but lots of versions.
+e Implementation effort.
+
+1. Multiversion B-Tree
+a. Needs a logarithmic number of disk seeks, probably the worst of all concepts, but at least it scales acceptably.
+b. 4 byte.
+c. Saved indexes. Depens on the size of the B-tree, but at least 256KB (the largest level above the indices themselves dominates.)
+d. Every change triggers copying the underlying block, thus one block per change and version.
+e. Get the concept of B-trees in details, then re-estimate. Looks like a recursion can help, but I expect caveats.
+
+2. Multiversion Single Level Index file
+a. Needs no extra disk seeds, provided, the index is loaded at intialization into RAM.
+b. 256 KB with blocks of 64KB.
+c. 256 KB with blocks of 64KB.
+d. Every change triggers copying the underlying block, thus one block of 256KB per change and version.
+e. Similar to the approach for block backend - the results can be reused immediately there.
+
+3. Conversion into Block_Backend
+a. Needs no extra disk seeds.
+b. Derived on the same basis as 2., but threefold due to extra data.
+c. If indexes are used as keys, the file is three times bigger than the payload. If some hash of the index is used, fewer waste, but we need to reassemble each value. It then is a worse version of 2.
+d. Every change triggers copying the underlying block, thus one block per change and version.
+e. Straightforward.
+
+4. Journal of Changes with incremental change records.
+a. One disk seek for every active version, but one with loading the entire diff file.
+b. 8 bytes.
+c. No overhead.
+d. Few bytes per change.
+e. It's an interesting, but challeging task: a lot of questions on the incremental still need to be answered, and there will be anyway two completely different storage formats, the map file and the incremental files.
+
+5. Journal of Changes with total change record.
+a. Exactly two disk seeks, but one with loading the entire diff file.
+b. 8 bytes.
+c. No overhead.
+d. Few bytes per change.
+e. Similar to 4.
+
+5. Hash table of Changes with total change record.
+a. Exactly two disk seeks, but one with loading potentially more data.
+b. either 8 byte or the entire hash table.
+c. The hash table, size e.g. 256 KB.
+d. The hash table, size e.g. 256 KB.
+e. Similar to 4, but even more challenging.
+
+Decision: 3. is too inefficient. 2. has similar implementation effort (the effort can be reused later), but an acceptable storage performance. In particular, it has no overhead at read time with a preloaded index. Everything else has significant risks that the implementation gets too complex. Take approach 2. and keep it modular to improve it later if necessary.
+
+---
+
+Dedicated functions with the following signature:
+uint32 join_index_of(begin, end< uint32 >)
+vector< uint32 > indices_to_upper(begin, end< uint32 >)
+vector< uint32 > indices_to_upper(Range_begin, Range_end)
+vector< uint32 > indices_to_lower(begin, end< uint32 >)
+vector< uint32 > indices_to_lower(Range_begin, Range_end)
+
+Tasks:
+
+for 0.6.1: (planned 2011-03-18)
++ clear file requirements for areas
++ introduce cgi_query and console_query --verbose
++ rewrite progress messages
++ repair update_moved_idxs
+= reorganize project dirs
++ rework bbox-query: should use fewer ranges
++ automated test environment
+
+Released: 2011-04-06
+
+===database changes===
+This version is binary compatible to the previous version 0.6.
+
+===interface changes===
+The log levels of osm3s_query have been reworked. I hope the default log level now contains sufficient comprehensible and only comprehensible messages. The progress information of update_database shall now be rather self-explanatory than diagnostic.
+
+===other changes===
+With the advent of a comprehensive automated testbed, a couple of bugs have been revealed and fixed:
+- The print statement doesn't throw anymore an error on absent optional parts of the database.
+- update_database can now properly apply diff files. It didn't update the indexes of ways and relations when only the underlying nodes have moved before.
+- bbox_query doesn't anymore crash on very large bounding boxes.
+- Relations that have only other relations as members have been accidently unchangeable in the previous version.
+- A possible buffer overflow in the database backend has been fixed.
+- Two other, rather arcane bugs in the database fixed.
+
+for 0.7 (planned 2011-04-15)
+= refactor file_blocks.h: reorganize file(s)
+= refactor block_backend.h: reorganize file(s)
+= refactor and test osm_backend_updater
++ automate dispatcher test
+= divide mirrored and derived database
+@database:
++ changes for transactionality: different idx management
+- reworked way and relation indices
+- extend values in tags_global
+
+for 0.7.1: (planned 2011-04-22)
+- polygon-query
+= remaining automated test environment
+
+for 0.8: (planned 2011-05-13)
+= make rules possible
+
+for 0.8.1: (planned 2011-06-03)
+- refactor file_blocks.h: spin Write_Iterator off Discrete_Iterator
+- refactor file_blocks.h: write rough documentation
+- speed optimizations for areas
+- XAPI interface
+
+for 0.8.2: (planned 2011-06-17)
+- use automake make targets (at least "check")
+
+for 0.9: (planned 2011-07-01)
+- version, user and time data
+
+---
+
+Security considerations:
+
+We consider any attack from outside that would make the server using excessive resources or executing malicious code. We expect a possible attack to fall into one of the following categories:
+(1) Sending ill formed input that makes the server execute machine code.
+(2) Sending input that is executed as script but works as malware at that level.
+(3) Sending input that causes excessive load.
+(4) Sending input to figure out server configuration data.
+
+The server is hardened against (1): Data is converted from Expat straight to C++ strings and doubles; thus there is little risk. (2) is avoided by design: the script language is intentionally not Turing complete, and it allows anyway not more than printing a subset of the mirrored OSM database.
+
+(3) is not completely addressed at the moment: An attacker may put so much queries from outside that the server runs out of memory. The individual queries are limited in size (to 512 MB of RAM), but not their total number. The other resource problem, queries that get runaway for a long time, are addressed: Every query is annotated with a timeout (180s or a user given) and terminated if it surpasses its time limit.
+
+(4) is not a concern at this state of the project: The server may give file names of the database or the containing directory which is useful to debug a server after installation.
